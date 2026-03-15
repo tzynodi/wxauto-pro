@@ -28,6 +28,7 @@ class App:
         self.adapter = MessageAdapter(
             save_dir=self.config.download_dir,
             voice_to_text=self.config.voice_to_text,
+            voice_to_text_timeout_seconds=self.config.voice_to_text_timeout_seconds,
         )
 
         # 初始化 WeChat
@@ -48,8 +49,13 @@ class App:
         )
         self.wx.keep_running()
 
-    def _on_message(self, msg: Any, chat_name: str) -> None:
-        """消息回调：适配 → 过滤 → 去重 → 入库。"""
+    def _on_message(self, msg: Any, chat_or_name: Any) -> None:
+        """消息回调：适配 → 过滤 → 去重 → 入库。wxauto 传入的第二个参数为 Chat 对象，需取 .who 作为聊天名。"""
+        chat_name = (
+            chat_or_name.who
+            if hasattr(chat_or_name, "who")
+            else str(chat_or_name)
+        )
         try:
             dto = self.adapter.adapt(msg, chat_name)
             if dto is None:
@@ -63,11 +69,16 @@ class App:
             if self.repo.exists_by_fingerprint(
                 dto.fingerprint, self.config.dedup_window_hours
             ):
+                content_preview = (dto.content or "")[:40]
+                if len(dto.content or "") > 40:
+                    content_preview += "..."
                 logger.info(
-                    "消息去重跳过: chat=%s, type=%s, fingerprint=%s...",
+                    "消息去重跳过: chat=%s, type=%s, fingerprint=%s, dedup_window_hours=%s, content_preview=%s",
                     chat_name,
                     dto.content_type.value,
-                    dto.fingerprint[:16],
+                    dto.fingerprint,
+                    self.config.dedup_window_hours,
+                    content_preview or "(空)",
                 )
                 return
 

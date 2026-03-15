@@ -56,7 +56,8 @@ class Listener(ABC):
     def _listener_stop(self):
         self._listener_is_listening = False
         self._listener_stop_event.set()
-        self._listener_thread.join()
+        # 使用 join(timeout) 避免 Ctrl+C 后主线程在 join() 上无限等待（例如回调在语音转文字中）
+        self._listener_thread.join(timeout=5)
 
     @abstractmethod
     def _get_listen_messages(self):
@@ -256,9 +257,8 @@ class WeChat(Chat, Listener):
         return chat
     
     def StopListening(self, remove: bool = True) -> None:
-        """停止监听"""
-        while self._listener_thread.is_alive():
-            self._listener_stop()
+        """停止监听。仅等待监听线程最多约 5 秒，避免 Ctrl+C 后主线程长时间卡住；监听线程为 daemon，进程退出时会被终止。"""
+        self._listener_stop()
         if remove:
             listen = self.listen.copy()
             for who in listen:

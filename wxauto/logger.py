@@ -98,19 +98,21 @@ class WxautoLogger:
         else:
             self.console_handler.setLevel(logging.INFO)
 
-    def debug(self, msg: str, stacklevel=2, *args, **kwargs):
+    # 注意：stacklevel 必须放在 *args 之后作为关键字参数，否则第一个位置参数会被当成 stacklevel，
+    # 导致 logging 使用的格式化参数数量与占位符不匹配，出现 "not enough arguments for format string"。
+    def debug(self, msg: str, *args, stacklevel=2, **kwargs):
         self.logger.debug(msg, *args, stacklevel=stacklevel, **kwargs)
 
-    def info(self, msg: str, stacklevel=2, *args, **kwargs):
+    def info(self, msg: str, *args, stacklevel=2, **kwargs):
         self.logger.info(msg, *args, stacklevel=stacklevel, **kwargs)
 
-    def warning(self, msg: str, stacklevel=2, *args, **kwargs):
+    def warning(self, msg: str, *args, stacklevel=2, **kwargs):
         self.logger.warning(msg, *args, stacklevel=stacklevel, **kwargs)
 
-    def error(self, msg: str, stacklevel=2, *args, **kwargs):
+    def error(self, msg: str, *args, stacklevel=2, **kwargs):
         self.logger.error(msg, *args, stacklevel=stacklevel, **kwargs)
 
-    def critical(self, msg: str, stacklevel=2, *args, **kwargs):
+    def critical(self, msg: str, *args, stacklevel=2, **kwargs):
         self.logger.critical(msg, *args, stacklevel=stacklevel, **kwargs)
 
 wxlog = WxautoLogger()

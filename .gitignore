@@ -7,3 +7,5 @@ downloads/
 .claude/
 wxauto_bac/
 wxauto_old/
+wxauto_logs/
+*.log

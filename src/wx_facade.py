@@ -13,7 +13,8 @@ class WxFacade:
         from wxauto import WeChat
 
         logger.info("初始化 WeChat...")
-        self._wx = WeChat()
+        # 启用 wxauto 自身的 debug 模式，让 wxlog 输出 DEBUG 级别日志，便于排查
+        self._wx = WeChat(debug=True)
         logger.info("WeChat 初始化完成, 昵称: %s", self._wx.nickname)
 
     def add_listen_chat(self, nickname: str, callback: Callable) -> None:
