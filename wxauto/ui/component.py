@@ -82,7 +82,7 @@ class SelectContactWnd(BaseUISubWnd):
                     fail.append(i)
                     wxlog.debug(f"未找到转发对象：{i}")
             if n > 0:
-                self.control.ButtonControl(RegexName='分别发送（\d+）').Click()
+                self.control.ButtonControl(RegexName=r'分别发送（\d+）').Click()
                 if n == len(target):
                     return WxResponse.success()
                 else:

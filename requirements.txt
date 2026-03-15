@@ -1,2 +1,5 @@
 comtypes
 Pillow
+pywin32
+pyperclip
+psutil

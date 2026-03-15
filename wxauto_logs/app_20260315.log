@@ -1,0 +1,6 @@
+2026-03-15 15:29:13 [wxauto_pro.facade] [INFO] [wx_facade.py:15]  初始化 WeChat...
+2026-03-15 15:29:13 [wxauto_pro.facade] [INFO] [wx_facade.py:17]  WeChat 初始化完成, 昵称: 毛球的铲屎官
+2026-03-15 15:29:13 [wxauto_pro.facade] [INFO] [wx_facade.py:21]  注册监听: 文件传输助手
+2026-03-15 15:29:17 [wxauto_pro.facade] [INFO] [wx_facade.py:27]  注册监听成功: 文件传输助手
+2026-03-15 15:29:17 [wxauto_pro.app] [INFO] [app.py:48]  已注册 1 个监听，启动 KeepRunning...
+2026-03-15 15:29:17 [wxauto_pro.facade] [INFO] [wx_facade.py:31]  主线程保活 KeepRunning() 启动
