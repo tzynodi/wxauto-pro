@@ -1,7 +1,4 @@
-"""应用入口：初始化、注册 callback、启动监听。
-
-用法: python -m src.app
-"""
+"""应用逻辑：App 类与消息回调。入口为项目根目录的 main.py。"""
 
 import logging
 import traceback
@@ -101,15 +98,3 @@ class App:
         ):
             return True
         return False
-
-
-def main() -> None:
-    config = AppConfig(
-        listen_chats=["文件传输助手"],  # 示例：修改为实际需要监听的聊天
-    )
-    app = App(config)
-    app.start()
-
-
-if __name__ == "__main__":
-    main()

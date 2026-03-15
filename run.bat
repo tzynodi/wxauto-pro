@@ -4,7 +4,7 @@ setlocal
 cd /d "%~dp0"
 
 echo 正在启动 wxauto-pro 消息监听...
-python -m src.app
+python main.py
 if errorlevel 1 (
     echo.
     echo 启动失败，请检查：

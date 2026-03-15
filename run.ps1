@@ -24,7 +24,7 @@ if (Test-Path "requirements.txt") {
 }
 
 Write-Host "Starting wxauto-pro message listener..." -ForegroundColor Cyan
-& python -m src.app
+& python main.py
 if ($LASTEXITCODE -ne 0) {
     Write-Host ""
     Write-Host "Startup failed. Check: Python in PATH, pip install -r requirements.txt, WeChat logged in." -ForegroundColor Yellow
