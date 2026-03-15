@@ -5,3 +5,5 @@ data/
 downloads/
 *.db
 .claude/
+wxauto_bac/
+wxauto_old/
