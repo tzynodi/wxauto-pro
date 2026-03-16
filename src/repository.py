@@ -109,7 +109,7 @@ class SQLiteMessageRepository(MessageRepository):
                     if dto.extra
                     else None,
                     dto.fingerprint,
-                    dto.message_time.isoformat() if dto.message_time else None,
+                    (dto.message_time.isoformat() if hasattr(dto.message_time, "isoformat") else str(dto.message_time)) if dto.message_time else None,
                     now.isoformat(),
                     json.dumps(dto.raw_info, ensure_ascii=False)
                     if dto.raw_info

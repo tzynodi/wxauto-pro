@@ -254,7 +254,6 @@ class ChatBox(BaseUISubWnd):
         new = [i for i in new1 if i in new2] if new2 else new1
         USED_MSG_IDS[self.id] = tuple(self.used_msg_ids + tuple(new))[-100:]
         new_controls = [i for i in msg_controls if i.runtimeid in new]
-        self.msgbox.MiddleClick()
         return [
                 parse_msg(msg_control, self) 
                 for msg_control 

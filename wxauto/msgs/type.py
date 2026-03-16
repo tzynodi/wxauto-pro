@@ -8,6 +8,7 @@ from wxauto.ui.component import (
 from wxauto.utils.win32 import (
     ReadClipboardData,
     SetClipboardText,
+    FindWindow,
 )
 from wxauto.logger import wxlog
 from .base import *
@@ -44,8 +45,6 @@ class MediaMessage:
             filename = f"wxauto_{self.type}_{time.strftime('%Y%m%d%H%M%S')}.mp4"
         filepath = get_file_dir(dir_path) / filename
 
-        # --- 最大连续失败次数，超过则提前放弃 ---
-        MAX_CLICK_FAILURES = 5
 
         def _find_bubble_rect(parent_control):
             """在 parent_control 内递归搜索（最多2层），
@@ -101,13 +100,6 @@ class MediaMessage:
                         sx = (r.left + r.right) // 2
                         sy = min((r.top + r.bottom) // 2, visible_bottom - 10)
                         return sx, sy, f"ImageControl {r}"
-                if self.type == "video":
-                    pane = self.control.GetProgenyControl(8, 1, control_type="PaneControl")
-                    if pane is not None:
-                        r = pane.BoundingRectangle
-                        sx = (r.left + r.right) // 2
-                        sy = min((r.top + r.bottom) // 2, visible_bottom - 10)
-                        return sx, sy, f"PaneControl {r}"
                 # 通用：找非 ButtonControl 的子控件
                 parent_width = ctrl_rect.width()
                 for child in (self.control.GetChildren() or []):
@@ -138,8 +130,40 @@ class MediaMessage:
                 wxlog.debug("[MediaMessage.download] 定位气泡异常: %s", e)
             return None, None, None
 
+        # --- 视频需要先点击中心下载按钮，等待下载完成 ---
+        if self.type == 'video':
+            if hasattr(self, "roll_into_view"):
+                self.roll_into_view()
+            time.sleep(0.1)
+            sx, sy, desc = _calc_click_screen_pos()
+            if sx is not None:
+                wxlog.debug("[MediaMessage.download] 左键点击视频中心触发下载: %s", desc)
+                uia.Click(sx, sy)
+                time.sleep(2)
+                # 检查是否弹出了播放器窗口（说明视频已下载过）
+                player_classes = ['CefWebViewWnd', 'MediaPreviewWnd']
+                for cls in player_classes:
+                    player_hwnd = FindWindow(classname=cls, timeout=0)
+                    if player_hwnd:
+                        wxlog.debug("[MediaMessage.download] 检测到播放器(%s, hwnd=%s)，关闭", cls, player_hwnd)
+                        try:
+                            import win32gui
+                            win32gui.PostMessage(player_hwnd, 0x0010, 0, 0)  # WM_CLOSE
+                        except Exception:
+                            pass
+                        time.sleep(0.5)
+                        break
+                else:
+                    # 没有播放器 → 正在下载中，等待几秒让下载完成
+                    wxlog.debug("[MediaMessage.download] 未检测到播放器，等待视频下载...")
+                    time.sleep(5)
+            else:
+                wxlog.debug("[MediaMessage.download] 无法定位视频气泡，跳过预下载")
+
         t0 = time.time()
         fail_count = 0
+        # 视频下载需要更多重试时间
+        MAX_CLICK_FAILURES = 15 if self.type == 'video' else 5
         while True:
             # 每次循环前确保消息滚入视野
             if hasattr(self, "roll_into_view"):

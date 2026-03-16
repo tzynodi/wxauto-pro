@@ -34,7 +34,12 @@ def _sanitize_dirname(name: str, max_len: int = 80) -> str:
     return s[:max_len] if len(s) > max_len else s or "unknown"
 
 # 位置正则（微信 UI 中位置消息的常见格式）
-LOCATION_PATTERN = re.compile(r"^\[位置\](.+)$|^位置：(.+)$")
+LOCATION_PATTERN = re.compile(r"^\[位置\](.*)$|^位置：(.+)$")
+
+# 链接卡片正则（微信中分享链接/音乐/公众号等卡片消息）
+LINK_CARD_PATTERN = re.compile(r"^\[(音乐|链接|公众号)\]$")
+CONTACT_CARD_PATTERN = re.compile(r"^\[名片\]$")
+VIDEO_ACCOUNT_PATTERN = re.compile(r"^\[视频号\]$")
 
 
 class MessageAdapter:
@@ -203,16 +208,6 @@ class MessageAdapter:
     ) -> MessageDTO:
         content = getattr(msg, "content", "")
 
-        # 优先检测位置
-        loc = LOCATION_PATTERN.match(content)
-        if loc:
-            logger.debug("类型分支: location, 来源: content regex")
-            address = loc.group(1) or loc.group(2)
-            extra = {"address": address, "lat": None, "lng": None}
-            return self._finish(
-                msg, chat_name, ContentType.LOCATION, sender_attr, content, extra
-            )
-
         # 检测链接
         url = URL_PATTERN.search(content)
         if url:
@@ -349,6 +344,88 @@ class MessageAdapter:
     def _adapt_other(
         self, msg: Any, chat_name: str, sender_attr: SenderAttr
     ) -> MessageDTO:
+        content = getattr(msg, "content", "")
+
+        # 位置消息（wxauto 中位置消息的 type 为 other，需在此检测）
+        loc = LOCATION_PATTERN.match(content)
+        if loc:
+            logger.debug("类型分支: location, 来源: other + content regex")
+            address, detail = self._extract_location_address(msg)
+            extra: Dict[str, Any] = {"address": address, "detail": detail, "lat": None, "lng": None}
+            return self._finish(
+                msg, chat_name, ContentType.LOCATION, sender_attr, content, extra
+            )
+
+        # 个人名片
+        if CONTACT_CARD_PATTERN.match(content):
+            logger.debug("类型分支: card, 来源: other + card regex (名片)")
+            card_info = self._extract_link_card_info(msg)
+            extra: Dict[str, Any] = {
+                "title": card_info.get("title"),
+                "description": card_info.get("description"),
+            }
+            display_content = card_info.get("title") or content
+            return self._finish(
+                msg, chat_name, ContentType.CARD, sender_attr, display_content, extra
+            )
+
+        # 视频号
+        if VIDEO_ACCOUNT_PATTERN.match(content):
+            logger.debug("类型分支: video_account, 来源: other + card regex (视频号)")
+            card_info = self._extract_link_card_info(msg)
+            extra: Dict[str, Any] = {
+                "title": card_info.get("title"),
+                "description": card_info.get("description"),
+            }
+            display_content = card_info.get("title") or content
+            return self._finish(
+                msg, chat_name, ContentType.VIDEO_ACCOUNT, sender_attr, display_content, extra
+            )
+
+        # 链接卡片消息（微信中分享链接/音乐/公众号等）
+        # 1) content 为 [音乐]/[链接]/[公众号] 的明确匹配
+        # 2) 兜底：尝试从控件树提取卡片信息（如 QQ 音乐分享 content 为 "歌名 歌手"）
+        link_card = LINK_CARD_PATTERN.match(content)
+        if link_card:
+            card_type_name = link_card.group(1)
+            logger.debug("类型分支: link, 来源: other + card regex (%s)", card_type_name)
+            card_info = self._extract_link_card_info(msg)
+            extra: Dict[str, Any] = {
+                "title": card_info.get("title"),
+                "description": card_info.get("description"),
+                "source": card_info.get("source") or card_type_name,
+            }
+            display_content = card_info.get("title") or content
+            return self._finish(
+                msg, chat_name, ContentType.LINK, sender_attr, display_content, extra
+            )
+
+        # 兜底：尝试从控件树检测是否为卡片消息（有 source 说明是分享卡片）
+        card_info = self._extract_link_card_info(msg)
+        if card_info.get("source"):
+            source = card_info["source"]
+            # 小程序单独类型
+            if source == "小程序":
+                logger.debug("类型分支: mini_program, 来源: other + 控件树检测 (source=%s)", source)
+                extra: Dict[str, Any] = {
+                    "title": card_info.get("title"),
+                    "description": card_info.get("description"),
+                }
+                display_content = card_info.get("title") or content
+                return self._finish(
+                    msg, chat_name, ContentType.MINI_PROGRAM, sender_attr, display_content, extra
+                )
+            logger.debug("类型分支: link, 来源: other + 控件树检测 (source=%s)", source)
+            extra: Dict[str, Any] = {
+                "title": card_info.get("title"),
+                "description": card_info.get("description"),
+                "source": source,
+            }
+            display_content = card_info.get("title") or content
+            return self._finish(
+                msg, chat_name, ContentType.LINK, sender_attr, display_content, extra
+            )
+
         logger.debug(
             "类型分支: other, 来源: msg.type=%s", getattr(msg, "type", "?")
         )
@@ -357,9 +434,108 @@ class MessageAdapter:
             chat_name,
             ContentType.OTHER,
             sender_attr,
-            getattr(msg, "content", ""),
+            content,
             {},
         )
+
+    @staticmethod
+    def _extract_link_card_info(msg: Any) -> Dict[str, Optional[str]]:
+        """从链接卡片消息控件的 TextControl 中提取标题、描述、来源。
+
+        微信链接卡片通常包含多个 TextControl：
+          - 标题（如"廉价token的代价"）
+          - 描述（如"UP主：雷哥AI"）
+          - 来源（如"哔哩哔哩"）
+        """
+        result: Dict[str, Optional[str]] = {"title": None, "description": None, "source": None}
+        try:
+            control = getattr(msg, "control", None)
+            if control is None:
+                return result
+
+            skip_names = {"", "[音乐]", "[链接]", "[公众号]", "[视频号]", "[名片]"}
+            texts: list = []
+
+            def _collect_text(ctrl, depth=0):
+                if depth > 10:
+                    return
+                if ctrl.ControlTypeName == "TextControl":
+                    name = getattr(ctrl, "Name", "")
+                    if name and name not in skip_names:
+                        texts.append(name)
+                for child in (ctrl.GetChildren() or []):
+                    _collect_text(child, depth + 1)
+
+            _collect_text(control)
+
+            # DEBUG: dump 完整控件树，用于探测可用信息
+            def _dump_tree(ctrl, depth=0):
+                if depth > 10:
+                    return
+                ctype = getattr(ctrl, "ControlTypeName", "?")
+                name = getattr(ctrl, "Name", "")
+                auto_id = getattr(ctrl, "AutomationId", "")
+                class_name = getattr(ctrl, "ClassName", "")
+                line = f"{'  ' * depth}{ctype} | Name='{name}' | AutoId='{auto_id}' | Class='{class_name}'"
+                logger.debug("控件树: %s", line)
+                for child in (ctrl.GetChildren() or []):
+                    _dump_tree(child, depth + 1)
+
+            _dump_tree(control)
+
+            if len(texts) >= 1:
+                result["title"] = texts[0]
+            if len(texts) >= 2:
+                result["description"] = texts[1]
+            if len(texts) >= 3:
+                result["source"] = texts[2]
+            if texts:
+                logger.debug("链接卡片提取: texts=%s -> title='%s', desc='%s', source='%s'",
+                             texts, result["title"], result["description"], result["source"])
+        except Exception as e:
+            logger.debug("链接卡片提取异常: %s", e)
+        return result
+
+    @staticmethod
+    def _extract_location_address(msg: Any) -> Tuple[Optional[str], Optional[str]]:
+        """从位置消息控件的 TextControl 中提取地址名称和详细地址。
+
+        微信位置气泡的控件结构（depth=7-8）中包含两个 TextControl：
+          - 第一个：地点名称（如"紫金研发创业中心"）
+          - 第二个：详细地址（如"江宁区挹淮街附近"）
+
+        Returns:
+            (地点名称, 详细地址)，提取失败时对应字段为 None。
+        """
+        try:
+            control = getattr(msg, "control", None)
+            if control is None:
+                return None, None
+
+            # 收集所有 TextControl 的文本
+            texts: list = []
+            skip_names = {"", "[位置]", "查看位置"}
+
+            def _collect_text(ctrl, depth=0):
+                if depth > 10:
+                    return
+                if ctrl.ControlTypeName == "TextControl":
+                    name = getattr(ctrl, "Name", "")
+                    if name and name not in skip_names:
+                        texts.append(name)
+                for child in (ctrl.GetChildren() or []):
+                    _collect_text(child, depth + 1)
+
+            _collect_text(control)
+
+            address = texts[0] if len(texts) >= 1 else None
+            detail = texts[1] if len(texts) >= 2 else None
+            if address:
+                logger.debug("位置地址提取: address='%s', detail='%s'", address, detail)
+            return address, detail
+        except Exception as e:
+            logger.debug("位置地址提取异常: %s", e)
+            return None, None
 
     # ------------------------------------------------------------------
     # 辅助方法
@@ -509,6 +685,6 @@ class MessageAdapter:
                 extra_key = str(filename)
 
         id_key = str(msg_id) if msg_id is not None else ""
-        time_key = message_time.isoformat() if message_time else ""
+        time_key = (message_time.isoformat() if hasattr(message_time, "isoformat") else str(message_time)) if message_time else ""
         raw = f"{chat_name}\x00{sender}\x00{content_type}\x00{content_preview}\x00{extra_key}\x00{id_key}\x00{time_key}"
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
