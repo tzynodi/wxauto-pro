@@ -41,6 +41,9 @@ LINK_CARD_PATTERN = re.compile(r"^\[(音乐|链接|公众号)\]$")
 CONTACT_CARD_PATTERN = re.compile(r"^\[名片\]$")
 VIDEO_ACCOUNT_PATTERN = re.compile(r"^\[视频号\]$")
 
+# 引用消息正则（content 中包含 \n引用  的消息 : ）
+QUOTE_PATTERN = re.compile(r"\n引用\s+的消息\s*:\s*")
+
 
 class MessageAdapter:
     def __init__(
@@ -48,10 +51,12 @@ class MessageAdapter:
         save_dir: str,
         voice_to_text: bool = True,
         voice_to_text_timeout_seconds: int = 60,
+        repo: Any = None,
     ):
         self._save_dir = save_dir
         self._voice_to_text = voice_to_text
         self._voice_to_text_timeout_seconds = voice_to_text_timeout_seconds
+        self._repo = repo
         # chat_name → 最近 TimeMessage 的 datetime
         self._last_time: Dict[str, Optional[datetime]] = {}
 
@@ -190,6 +195,11 @@ class MessageAdapter:
     ) -> Optional[MessageDTO]:
         sender_attr = SenderAttr.SELF if attr == "self" else SenderAttr.FRIEND
         msg_type = getattr(msg, "type", "other")
+
+        # 引用消息（必须在类型分发之前拦截，防止引用文件触发下载）
+        content = getattr(msg, "content", "")
+        if QUOTE_PATTERN.search(content):
+            return self._adapt_quote(msg, chat_name, sender_attr)
 
         if msg_type == "text":
             return self._adapt_text(msg, chat_name, sender_attr)
@@ -340,6 +350,535 @@ class MessageAdapter:
         return self._finish(
             msg, chat_name, ContentType.VOICE, sender_attr, content, extra
         )
+
+    def _adapt_quote(
+        self, msg: Any, chat_name: str, sender_attr: SenderAttr
+    ) -> MessageDTO:
+        """处理引用/回复消息。
+
+        content 格式: "回复内容\n引用  的消息 : 被引用内容"
+        对媒体类引用（图片/视频/文件），通过 UI 导航到原始消息下载媒体。
+        """
+        import time
+        import wxauto.uiautomation as uia
+
+        content = getattr(msg, "content", "")
+        match = QUOTE_PATTERN.search(content)
+
+        reply_content = content[: match.start()] if match else content
+        quoted_raw = content[match.end() :] if match else ""
+
+        logger.debug(
+            "类型分支: quote, reply='%s', quoted_raw='%s'",
+            reply_content[:50],
+            quoted_raw[:50],
+        )
+
+        quoted_type = self._infer_quoted_type(quoted_raw)
+
+        # 从控件树提取发送者和内容
+        quoted_sender, quoted_content_from_tree, tree_type = self._extract_quote_info(
+            msg, reply_content
+        )
+        quoted_content = quoted_content_from_tree or quoted_raw
+
+        # 控件树检测到的类型优先级高于纯文本推断
+        if quoted_type == "text" and tree_type:
+            quoted_type = tree_type
+            logger.debug("引用类型由控件树修正: %s", tree_type)
+
+        # DB 辅助推断：控件树无法判断时，查 DB 中同聊天的匹配消息
+        if quoted_type == "text" and quoted_content and self._repo:
+            db_type = self._infer_type_from_db(chat_name, quoted_content)
+            if db_type:
+                quoted_type = db_type
+                logger.debug("引用类型由DB修正: %s", db_type)
+
+        extra: Dict[str, Any] = {
+            "reply_content": reply_content,
+            "quoted_sender": quoted_sender,
+            "quoted_content": quoted_content,
+            "quoted_type": quoted_type,
+        }
+
+        # 对媒体类引用，导航到原始消息下载
+        if quoted_type in ("image", "video", "file"):
+            media_extra = self._navigate_quote_and_download(
+                msg, chat_name, quoted_type
+            )
+            extra.update(media_extra)
+
+        return self._finish(
+            msg, chat_name, ContentType.QUOTE, sender_attr, reply_content, extra
+        )
+
+    def _navigate_quote_and_download(
+        self, msg: Any, chat_name: str, quoted_type: str
+    ) -> Dict[str, Any]:
+        """点击引用区中的媒体缩略图，通过预览窗口下载原始媒体。
+
+        流程（图片）：
+        1. 点击引用区中的图片缩略图 → 打开图片预览窗口
+        2. 在预览窗口中右键 → 复制 → 从剪贴板获取文件
+        3. 关闭预览窗口
+        """
+        import time
+
+        extra: Dict[str, Any] = {}
+        control = getattr(msg, "control", None)
+        if not control:
+            return extra
+
+        try:
+            # 1. 找到引用区中的可点击元素（图片缩略图 ButtonControl）
+            quoted_pane = self._find_quoted_pane(control)
+            if not quoted_pane:
+                logger.debug("[quote dl] 未找到引用区控件")
+                return extra
+
+            # 在引用区中查找图片缩略图（ButtonControl，Name 为空）
+            click_target = self._find_media_in_quoted_pane(
+                quoted_pane, quoted_type
+            )
+            if not click_target:
+                # fallback: 直接点击引用区中心
+                click_target = quoted_pane
+
+            # 点击前确保聊天窗口在前台
+            self._ensure_foreground(control)
+
+            logger.debug("[quote dl] 点击引用区媒体缩略图")
+            click_target.Click()
+            time.sleep(1)
+
+            # 2. 检测预览窗口并下载（图片和视频都可能打开预览）
+            if quoted_type in ("image", "video"):
+                extra = self._download_from_preview_window(msg, chat_name)
+
+        except Exception as e:
+            extra["download_status"] = "failed"
+            extra["download_error"] = str(e)
+            logger.warning("[quote dl] 异常: %s", e)
+
+        return extra
+
+    @staticmethod
+    def _ensure_foreground(control: Any) -> None:
+        """将消息所在的聊天窗口拉到前台，确保后续点击操作生效。"""
+        try:
+            import win32gui
+            # 从控件向上找到顶层窗口
+            top = control
+            if hasattr(top, "GetTopLevelControl"):
+                top = top.GetTopLevelControl()
+            hwnd = getattr(top, "NativeWindowHandle", 0)
+            if hwnd:
+                win32gui.ShowWindow(hwnd, 1)  # SW_SHOWNORMAL
+                win32gui.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 3)  # TOPMOST
+                win32gui.SetWindowPos(hwnd, -2, 0, 0, 0, 0, 3)  # NOTOPMOST
+                logger.debug("[quote dl] 窗口已前置: hwnd=%s", hwnd)
+        except Exception as e:
+            logger.debug("[quote dl] 窗口前置失败: %s", e)
+
+    @staticmethod
+    def _find_quoted_pane(control: Any) -> Any:
+        """找到引用区 PaneControl（递归搜索，兼容 self/friend 不同结构）。
+
+        引用消息的气泡主体是一个 PaneControl，它有 >=2 个 PaneControl 子节点：
+          - 第一个：回复区
+          - 第二个：引用区 ← 要找的
+        搜索最深层符合条件的 PaneControl，避免匹配到上层容器。
+        """
+        try:
+            # dump 完整控件树帮助调试
+            def _dump(ctrl, depth=0):
+                if depth > 10:
+                    return
+                ctype = getattr(ctrl, "ControlTypeName", "?")
+                name = getattr(ctrl, "Name", "")
+                logger.debug(
+                    "[quote tree] %s%s | Name='%s'",
+                    "  " * depth, ctype, name,
+                )
+                for child in (ctrl.GetChildren() or []):
+                    _dump(child, depth + 1)
+            _dump(control)
+
+            # 收集所有符合条件的 PaneControl（有 >=2 个 PaneControl 子节点）
+            candidates: list = []
+
+            def _find_all(ctrl, depth=0):
+                if depth > 10:
+                    return
+                if ctrl.ControlTypeName == "PaneControl":
+                    children = ctrl.GetChildren() or []
+                    pane_children = [
+                        c for c in children
+                        if c.ControlTypeName == "PaneControl"
+                    ]
+                    if len(pane_children) >= 2:
+                        candidates.append((ctrl, pane_children, depth))
+                for child in (ctrl.GetChildren() or []):
+                    _find_all(child, depth + 1)
+
+            _find_all(control)
+
+            if not candidates:
+                return None
+
+            def _has_quote_marker(pane) -> bool:
+                """检查 PaneControl 子树中是否包含引用区标记（' : ' 文本）。"""
+                try:
+                    for child in (pane.GetChildren() or []):
+                        if child.ControlTypeName == "TextControl":
+                            name = getattr(child, "Name", "")
+                            if " : " in name:
+                                return True
+                        if _has_quote_marker(child):
+                            return True
+                except Exception:
+                    pass
+                return False
+
+            # 选第二个 PaneControl 子节点包含引用区标记（' : '）的候选
+            for ctrl, pane_children, depth in candidates:
+                if _has_quote_marker(pane_children[1]):
+                    logger.debug(
+                        "[quote dl] 找到引用区 PaneControl (depth=%d, candidates=%d, 匹配: quote marker)",
+                        depth, len(candidates),
+                    )
+                    return pane_children[1]
+
+            # fallback：取最浅层（最不容易选错）
+            bubble_body, pane_children, depth = min(candidates, key=lambda x: x[2])
+            logger.debug(
+                "[quote dl] 找到引用区 PaneControl (depth=%d, candidates=%d, fallback: shallowest)",
+                depth, len(candidates),
+            )
+            return pane_children[1]
+
+        except Exception as e:
+            logger.debug("[quote dl] 查找引用区异常: %s", e)
+            return None
+
+    @staticmethod
+    def _find_media_in_quoted_pane(quoted_pane: Any, quoted_type: str) -> Any:
+        """在引用区中找到媒体缩略图控件。
+
+        图片引用的控件树：
+          TextControl | '桔梗'
+          TextControl | ' : '
+          PaneControl
+            ButtonControl ← 图片缩略图，点击打开预览
+        """
+        try:
+            # 先 dump 引用区控件树，帮助调试
+            def _dump(ctrl, depth=0):
+                if depth > 6:
+                    return
+                ctype = getattr(ctrl, "ControlTypeName", "?")
+                name = getattr(ctrl, "Name", "")
+                logger.debug(
+                    "[quote dl] 引用区控件: %s%s | Name='%s'",
+                    "  " * depth, ctype, name,
+                )
+                for child in (ctrl.GetChildren() or []):
+                    _dump(child, depth + 1)
+            _dump(quoted_pane)
+
+            # 收集所有 ButtonControl（不限制 Name）
+            buttons: list = []
+
+            def _find_buttons(ctrl, depth=0):
+                if depth > 8:
+                    return
+                if ctrl.ControlTypeName == "ButtonControl":
+                    buttons.append(ctrl)
+                for child in (ctrl.GetChildren() or []):
+                    _find_buttons(child, depth + 1)
+
+            _find_buttons(quoted_pane)
+
+            if buttons:
+                # 优先选 Name 为空的（缩略图），否则取第一个
+                btn = next((b for b in buttons if not getattr(b, "Name", "")), buttons[0])
+                logger.debug(
+                    "[quote dl] 找到媒体缩略图 ButtonControl (共%d个, Name='%s')",
+                    len(buttons), getattr(btn, "Name", ""),
+                )
+                return btn
+
+            logger.debug("[quote dl] 引用区未找到 ButtonControl")
+            return None
+        except Exception as e:
+            logger.debug("[quote dl] 查找媒体缩略图异常: %s", e)
+            return None
+
+    def _download_from_preview_window(
+        self, msg: Any, chat_name: str
+    ) -> Dict[str, Any]:
+        """从图片预览窗口下载图片。
+
+        点击引用区图片缩略图后，微信打开图片预览窗口。
+        在预览窗口中右键 → 复制 → 从剪贴板获取文件路径。
+        """
+        import time
+        import wxauto.uiautomation as uia
+        from wxauto.utils.win32 import ReadClipboardData, FindWindow
+
+        extra: Dict[str, Any] = {}
+
+        # 检测预览窗口
+        preview_hwnd = None
+        preview_classes = ["ImagePreviewWnd", "CefWebViewWnd", "MediaPreviewWnd"]
+        for cls in preview_classes:
+            hwnd = FindWindow(classname=cls, timeout=1)
+            if hwnd:
+                preview_hwnd = hwnd
+                logger.debug("[quote dl] 检测到预览窗口: class=%s, hwnd=%s", cls, hwnd)
+                break
+
+        if not preview_hwnd:
+            logger.debug("[quote dl] 未检测到预览窗口")
+            extra["download_status"] = "no_preview"
+            return extra
+
+        try:
+            # 获取预览窗口的控件
+            from wxauto.uiautomation import ControlFromHandle
+            preview_ctrl = ControlFromHandle(preview_hwnd)
+
+            if not preview_ctrl:
+                logger.debug("[quote dl] 无法获取预览窗口控件")
+                extra["download_status"] = "no_preview_ctrl"
+                return extra
+
+            # 在预览窗口中心右键
+            rect = preview_ctrl.BoundingRectangle
+            sx = (rect.left + rect.right) // 2
+            sy = (rect.top + rect.bottom) // 2
+
+            logger.debug("[quote dl] 在预览窗口中右键: (%s, %s)", sx, sy)
+            uia.RightClick(sx, sy)
+            time.sleep(0.5)
+
+            # 查找右键菜单并选择 "复制"
+            from wxauto.utils.win32 import GetAllWindows
+            menu_ctrl = None
+            menu_list = [i for i in GetAllWindows() if 'CMenuWnd' in i]
+            if menu_list:
+                menu_ctrl = uia.ControlFromHandle(menu_list[0][0])
+
+            if menu_ctrl:
+                # 在菜单中查找 "复制" 选项并点击
+                copy_clicked = False
+                try:
+                    list_ctrl = menu_ctrl.ListControl()
+                    if list_ctrl:
+                        for item in (list_ctrl.GetChildren() or []):
+                            if item.Name == "复制":
+                                item.Click()
+                                copy_clicked = True
+                                break
+                except Exception:
+                    pass
+
+                if not copy_clicked:
+                    # fallback: 按 ESC 关闭菜单
+                    try:
+                        menu_ctrl.SendKeys("{ESC}")
+                    except Exception:
+                        pass
+                    extra["download_status"] = "menu_no_copy"
+                    logger.debug("[quote dl] 右键菜单未找到复制选项")
+                else:
+                    time.sleep(0.5)
+                    data = ReadClipboardData()
+                    # ReadClipboardData 返回的 key 可能是 int 或 str
+                    hdrop = data.get(15) or data.get('15') or data.get(str(15)) if data else None
+                    if hdrop:
+                        src_path = Path(hdrop[0])
+                        save_dir, rel_prefix = self._get_chat_save_info(msg, chat_name)
+                        save_dir.mkdir(parents=True, exist_ok=True)
+                        dst_path = save_dir / src_path.name
+                        # 文件已存在时加时间戳避免冲突
+                        if dst_path.exists():
+                            stem = src_path.stem
+                            suffix = src_path.suffix
+                            ts = datetime.now().strftime("%Y%m%d%H%M%S")
+                            dst_path = save_dir / f"{stem}_{ts}{suffix}"
+                        import shutil
+                        shutil.copy2(str(src_path), str(dst_path))
+                        extra["path"] = f"{rel_prefix}/{dst_path.name}"
+                        extra["download_status"] = "success"
+                        logger.debug("[quote dl] 媒体下载成功: %s", extra["path"])
+                    else:
+                        extra["download_status"] = "clipboard_empty"
+                        logger.debug("[quote dl] 剪贴板无文件数据, keys=%s", list(data.keys()) if data else "None")
+            else:
+                extra["download_status"] = "menu_not_found"
+                logger.debug("[quote dl] 未找到右键菜单窗口")
+
+        except Exception as e:
+            extra["download_status"] = "failed"
+            extra["download_error"] = str(e)
+            logger.warning("[quote dl] 预览窗口下载异常: %s", e)
+        finally:
+            # 关闭预览窗口
+            try:
+                import win32gui
+                win32gui.PostMessage(preview_hwnd, 0x0010, 0, 0)  # WM_CLOSE
+                time.sleep(0.3)
+                logger.debug("[quote dl] 预览窗口已关闭")
+            except Exception:
+                pass
+
+        return extra
+
+    @staticmethod
+    def _infer_quoted_type(quoted_raw: str) -> str:
+        """根据被引用的原始内容推断其类型。"""
+        quoted_raw = quoted_raw.strip()
+        if quoted_raw == "[图片]":
+            return "image"
+        if quoted_raw == "[视频]":
+            return "video"
+        if quoted_raw == "[语音]":
+            return "voice"
+        if quoted_raw in ("[链接]", "[音乐]", "[公众号]"):
+            return "link"
+        if quoted_raw == "[位置]":
+            return "location"
+        if quoted_raw == "[名片]":
+            return "card"
+        if quoted_raw == "[视频号]":
+            return "video_account"
+        # 文件名特征：包含扩展名
+        if "." in quoted_raw and not quoted_raw.startswith("http"):
+            ext = quoted_raw.rsplit(".", 1)[-1].lower()
+            if ext in (
+                "doc", "docx", "xls", "xlsx", "ppt", "pptx", "pdf",
+                "txt", "zip", "rar", "7z", "tar", "gz",
+                "jpg", "jpeg", "png", "gif", "bmp", "webp",
+                "mp3", "wav", "mp4", "avi", "mov", "mkv",
+            ):
+                return "file"
+        return "text"
+
+    def _infer_type_from_db(self, chat_name: str, quoted_content: str) -> Optional[str]:
+        """从 DB 中查找匹配的消息类型（用于位置等无法从内容推断的引用）。"""
+        try:
+            # 正向搜索：quoted_content 出现在 DB 记录的 content/extra 中
+            row = self._repo._conn.execute(
+                "SELECT content_type FROM messages "
+                "WHERE chat_name = ? AND content_type NOT IN ('system', 'time_separator', 'quote', 'text') "
+                "AND (extra LIKE ? OR content LIKE ?) "
+                "ORDER BY created_at DESC LIMIT 1",
+                (chat_name, f"%{quoted_content}%", f"%{quoted_content}%"),
+            ).fetchone()
+            if row:
+                return row[0]
+
+            # 反向搜索：DB 记录的 content 出现在 quoted_content 中
+            # 用于视频号等场景（DB存频道名，引用显示视频标题含频道名）
+            rows = self._repo._conn.execute(
+                "SELECT content_type, content FROM messages "
+                "WHERE chat_name = ? AND content_type NOT IN ('system', 'time_separator', 'quote', 'text') "
+                "ORDER BY created_at DESC LIMIT 20",
+                (chat_name,),
+            ).fetchall()
+            for r in rows:
+                db_content = r[1] or ""
+                if db_content and len(db_content) >= 2 and db_content in quoted_content:
+                    return r[0]
+        except Exception as e:
+            logger.debug("DB 类型推断异常: %s", e)
+        return None
+
+    @staticmethod
+    def _extract_quote_info(
+        msg: Any, reply_content: str
+    ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        """从控件树提取引用消息的发送者、内容和类型。
+
+        Returns:
+            (quoted_sender, quoted_content, detected_type)
+            detected_type: 从控件树检测到的类型（如 "location"），无法判断时为 None
+        """
+        try:
+            control = getattr(msg, "control", None)
+            if control is None:
+                return None, None, None
+
+            # 收集所有 TextControl 和特殊控件名称
+            texts: list = []
+            special_names: list = []
+
+            def _collect(ctrl, depth=0):
+                if depth > 12:
+                    return
+                name = getattr(ctrl, "Name", "")
+                if ctrl.ControlTypeName == "TextControl":
+                    if name:
+                        texts.append((name, depth))
+                # 记录含特殊标记的控件名称（如 "[位置]", "查看位置" 等）
+                if name and name not in ("", reply_content):
+                    special_names.append((name, ctrl.ControlTypeName, depth))
+                for child in (ctrl.GetChildren() or []):
+                    _collect(child, depth + 1)
+
+            _collect(control)
+
+            if not texts:
+                return None, None, None
+
+            logger.debug("引用控件树 texts: %s", texts)
+
+            # 检测特殊类型
+            detected_type = None
+            for name, ctype, depth in special_names:
+                if name in ("[位置]", "查看位置"):
+                    detected_type = "location"
+                    break
+
+            # 策略：回复文字是第一个 TextControl（与 reply_content 匹配）
+            # 后续的 TextControl 属于引用区
+            quote_texts = []
+            found_reply = False
+            for name, depth in texts:
+                if not found_reply and name == reply_content:
+                    found_reply = True
+                    continue
+                if found_reply:
+                    quote_texts.append(name)
+
+            # 如果没有精确匹配到回复文字，跳过第一个 TextControl
+            if not found_reply and len(texts) > 1:
+                quote_texts = [name for name, _ in texts[1:]]
+
+            if not quote_texts:
+                return None, None, detected_type
+
+            # 解析引用区的 TextControl
+            # 情况1: 单个 "发送者 : 内容" 格式
+            if len(quote_texts) == 1:
+                text = quote_texts[0]
+                if " : " in text:
+                    sender, content = text.split(" : ", 1)
+                    return sender.strip(), content.strip(), detected_type
+                return None, text, detected_type
+
+            # 情况2: 多个 TextControl，如 ["桔梗", " : ", ...] 或 ["桔梗", " : "]
+            # 第一个是发送者，" : " 是分隔符，后面是内容
+            sender = quote_texts[0]
+            # 过滤掉 " : " 分隔符
+            remaining = [t for t in quote_texts[1:] if t.strip() != ":"]
+            quoted_content = remaining[0] if remaining else None
+            return sender, quoted_content, detected_type
+
+        except Exception as e:
+            logger.debug("引用控件树提取异常: %s", e)
+            return None, None, None
 
     def _adapt_other(
         self, msg: Any, chat_name: str, sender_attr: SenderAttr

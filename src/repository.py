@@ -10,7 +10,7 @@ import sqlite3
 import threading
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from .models import ContentType, MessageDTO, SenderAttr
 
@@ -32,6 +32,12 @@ class MessageRepository(ABC):
     def list_by_chat(
         self, chat_name: str, limit: int = 50
     ) -> List[MessageDTO]:
+        ...
+
+    @abstractmethod
+    def find_quoted_message_id(
+        self, chat_name: str, quoted_content: str, quoted_type: str
+    ) -> Optional[int]:
         ...
 
 
@@ -147,6 +153,33 @@ class SQLiteMessageRepository(MessageRepository):
             (chat_name, limit),
         ).fetchall()
         return [self._row_to_dto(row) for row in rows]
+
+    def find_quoted_message_id(
+        self, chat_name: str, quoted_content: str, quoted_type: str
+    ) -> Optional[int]:
+        """在同一聊天中查找被引用的原始消息 ID（精确匹配）。"""
+        exclude = "AND content_type NOT IN ('system', 'time_separator', 'quote')"
+
+        # 精确匹配 content
+        row = self._conn.execute(
+            f"SELECT id FROM messages WHERE chat_name = ? AND content = ? {exclude} "
+            "ORDER BY created_at DESC LIMIT 1",
+            (chat_name, quoted_content),
+        ).fetchone()
+        if row:
+            return row["id"]
+
+        # 在 extra 中搜索（如位置消息的地址文字）
+        if quoted_content:
+            row = self._conn.execute(
+                f"SELECT id FROM messages WHERE chat_name = ? AND extra LIKE ? {exclude} "
+                "ORDER BY created_at DESC LIMIT 1",
+                (chat_name, f"%{quoted_content}%"),
+            ).fetchone()
+            if row:
+                return row["id"]
+
+        return None
 
     def close(self) -> None:
         self._conn.close()

@@ -29,6 +29,7 @@ class App:
             save_dir=self.config.download_dir,
             voice_to_text=self.config.voice_to_text,
             voice_to_text_timeout_seconds=self.config.voice_to_text_timeout_seconds,
+            repo=self.repo,
         )
 
         # 初始化 WeChat

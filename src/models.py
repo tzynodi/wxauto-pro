@@ -20,6 +20,7 @@ class ContentType(str, Enum):
     SYSTEM = "system"
     TIME_SEPARATOR = "time_separator"
     TICKLE = "tickle"
+    QUOTE = "quote"
     OTHER = "other"
 
 
