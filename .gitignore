@@ -10,3 +10,4 @@ wxauto_old/
 wxauto_logs/
 *.log
 claudeimage/
+*.egg-info/

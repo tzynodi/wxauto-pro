@@ -3,3 +3,5 @@ Pillow
 pywin32
 pyperclip
 psutil
+colorama
+tenacity

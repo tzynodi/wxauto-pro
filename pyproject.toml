@@ -1,0 +1,21 @@
+[project]
+name = "wxauto-pro"
+version = "4.0.0"
+description = "WeChat automation based on Windows UI Automation"
+requires-python = ">=3.8,<=3.15"
+dependencies = [
+    "tenacity",
+    "pywin32",
+    "pyperclip",
+    "pillow",
+    "psutil",
+    "colorama",
+    "comtypes",
+]
+
+[tool.setuptools.packages.find]
+include = ["wxauto*"]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
