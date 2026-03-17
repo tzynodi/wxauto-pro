@@ -37,5 +37,5 @@ class AppConfig:
     # 语音是否自动转文字
     voice_to_text: bool = True
 
-    # 语音转文字最长等待时间（秒），超时则放弃转写、存为 [语音]，避免识别失败时无限阻塞监听。微信语音最长 60 秒
-    voice_to_text_timeout_seconds: int = 60
+    # 语音转文字最长等待时间（秒），超时则放弃转写、存为 [语音]，避免识别失败时无限阻塞监听
+    voice_to_text_timeout_seconds: int = 20

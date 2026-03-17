@@ -58,6 +58,9 @@ class App:
             else str(chat_or_name)
         )
         try:
+            # 检测记录：在任何处理之前立即写入明细，用于比对是否漏消息
+            self.repo.log_detect(chat_name, msg)
+
             dto = self.adapter.adapt(msg, chat_name)
             if dto is None:
                 return

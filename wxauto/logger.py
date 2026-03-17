@@ -64,7 +64,7 @@ class WxautoLogger:
             log_dir.mkdir(parents=True, exist_ok=True)
             
             # 使用当前时间创建日志文件
-            current_time = datetime.now().strftime("%Y%m%d")
+            current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
             log_file = log_dir / f"app_{current_time}.log"
             
             self.file_handler = logging.FileHandler(log_file, encoding='utf-8')

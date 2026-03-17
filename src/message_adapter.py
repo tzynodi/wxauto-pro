@@ -401,12 +401,17 @@ class MessageAdapter:
             "quoted_type": quoted_type,
         }
 
-        # 对媒体类引用，导航到原始消息下载
-        if quoted_type in ("image", "video", "file"):
+        # 对媒体类引用，导航到原始消息下载（仅图片/视频；文件不点击，避免打开外部应用）
+        if quoted_type in ("image", "video"):
             media_extra = self._navigate_quote_and_download(
                 msg, chat_name, quoted_type
             )
             extra.update(media_extra)
+
+        # 文件类引用：从 DB 查找原始文件的路径信息
+        if quoted_type == "file" and self._repo:
+            file_extra = self._lookup_file_path_from_db(chat_name, quoted_content)
+            extra.update(file_extra)
 
         return self._finish(
             msg, chat_name, ContentType.QUOTE, sender_attr, reply_content, extra
@@ -794,6 +799,41 @@ class MessageAdapter:
         except Exception as e:
             logger.debug("DB 类型推断异常: %s", e)
         return None
+
+    def _lookup_file_path_from_db(
+        self, chat_name: str, quoted_content: str
+    ) -> Dict[str, Any]:
+        """从 DB 中查找引用文件的路径信息。"""
+        extra: Dict[str, Any] = {}
+        if not quoted_content:
+            return extra
+        try:
+            import json as _json
+
+            row = self._repo._conn.execute(
+                "SELECT extra FROM messages "
+                "WHERE chat_name = ? AND content_type = 'file' "
+                "AND (content LIKE ? OR extra LIKE ?) "
+                "ORDER BY created_at DESC LIMIT 1",
+                (chat_name, f"%{quoted_content}%", f"%{quoted_content}%"),
+            ).fetchone()
+            if row and row[0]:
+                file_extra = _json.loads(row[0]) if isinstance(row[0], str) else row[0]
+                if file_extra.get("path"):
+                    extra["quoted_file_path"] = file_extra["path"]
+                if file_extra.get("filename"):
+                    extra["quoted_file_name"] = file_extra["filename"]
+                if file_extra.get("filesize"):
+                    extra["quoted_file_size"] = file_extra["filesize"]
+                if extra:
+                    logger.debug(
+                        "引用文件路径从DB获取: path=%s, name=%s",
+                        extra.get("quoted_file_path"),
+                        extra.get("quoted_file_name"),
+                    )
+        except Exception as e:
+            logger.debug("引用文件DB查找异常: %s", e)
+        return extra
 
     @staticmethod
     def _extract_quote_info(

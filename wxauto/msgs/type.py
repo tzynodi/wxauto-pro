@@ -162,9 +162,26 @@ class MediaMessage:
 
         t0 = time.time()
         fail_count = 0
+        _did_left_click_fallback = False
         # 视频下载需要更多重试时间
-        MAX_CLICK_FAILURES = 15 if self.type == 'video' else 5
+        MAX_CLICK_FAILURES = 15 if self.type == 'video' else 8
         while True:
+            # 连续失败 3 次后，尝试左键点击触发微信加载图片（仅一次）
+            if fail_count == 3 and self.type == 'image' and not _did_left_click_fallback:
+                _did_left_click_fallback = True
+                if hasattr(self, "roll_into_view"):
+                    self.roll_into_view()
+                time.sleep(0.1)
+                _sx, _sy, _desc = _calc_click_screen_pos()
+                if _sx is not None:
+                    wxlog.debug("[MediaMessage.download] 右键3次失败，左键点击触发加载: %s", _desc)
+                    uia.Click(_sx, _sy)
+                    time.sleep(2)
+                    # 关闭可能弹出的图片预览窗口
+                    if imagewnd := WeChatImage():
+                        imagewnd.close()
+                        time.sleep(0.3)
+
             # 每次循环前确保消息滚入视野
             if hasattr(self, "roll_into_view"):
                 self.roll_into_view()

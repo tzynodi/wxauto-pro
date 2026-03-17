@@ -83,6 +83,20 @@ class SQLiteMessageRepository(MessageRepository):
 
             CREATE INDEX IF NOT EXISTS idx_chat_name
                 ON messages (chat_name, created_at);
+
+            CREATE TABLE IF NOT EXISTS detect_log (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_name       TEXT    NOT NULL,
+                msg_type        TEXT,
+                msg_attr        TEXT,
+                sender          TEXT,
+                content_preview TEXT,
+                runtime_id      TEXT,
+                detected_at     TEXT    NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_detect_log_chat
+                ON detect_log (chat_name, detected_at);
             """
         )
         self._conn.commit()
@@ -180,6 +194,31 @@ class SQLiteMessageRepository(MessageRepository):
                 return row["id"]
 
         return None
+
+    def log_detect(self, chat_name: str, msg) -> None:
+        """检测到新消息时立即记录明细（在 adapt/filter/dedup 之前调用）。
+        msg 为 wxauto 原始 Message 对象，仅读取已有属性，不做 UI 操作。"""
+        now = datetime.now().isoformat()
+        content = getattr(msg, "content", None) or ""
+        preview = content[:80] if content else ""
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO detect_log
+                    (chat_name, msg_type, msg_attr, sender, content_preview, runtime_id, detected_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    chat_name,
+                    getattr(msg, "type", None),
+                    getattr(msg, "attr", None),
+                    getattr(msg, "sender", None),
+                    preview,
+                    str(getattr(msg, "id", "")),
+                    now,
+                ),
+            )
+            self._conn.commit()
 
     def close(self) -> None:
         self._conn.close()

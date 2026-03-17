@@ -110,8 +110,88 @@ class HumanMessage(BaseMessage):
 
 
     def right_click(self):
+        """对消息气泡区域右键弹出菜单，避免误点头像。
+
+        采用与 MediaMessage.download._calc_click_screen_pos 相同的气泡定位策略：
+        遍历直接子控件，跳过 ButtonControl（头像）和极小控件；
+        若子控件太宽（全宽容器），在其内部递归查找面积最小的非按钮子控件作为气泡。
+        """
         self.roll_into_view()
-        self.head_control.Click(x=-self._xbias)
+
+        try:
+            ctrl_rect = self.control.BoundingRectangle
+        except Exception:
+            self.control.RightClick()
+            return
+
+        # 获取聊天列表可见区域下界，用于裁剪点击坐标
+        visible_bottom = ctrl_rect.bottom
+        try:
+            list_ctrl = self.control.GetParentControl()
+            if list_ctrl:
+                visible_bottom = list_ctrl.BoundingRectangle.bottom
+        except Exception:
+            pass
+
+        parent_width = ctrl_rect.width()
+
+        def _find_bubble_rect(parent_ctrl):
+            """在 parent_ctrl 内搜索（最多2层），
+            返回面积最小、非 ButtonControl、且 ≥30×30 的子控件的 BoundingRectangle。"""
+            best_rect = None
+            best_area = float('inf')
+            for child in (parent_ctrl.GetChildren() or []):
+                try:
+                    rect = child.BoundingRectangle
+                except Exception:
+                    continue
+                if child.ControlTypeName == "ButtonControl":
+                    continue
+                w, h = rect.width(), rect.height()
+                if w >= 30 and h >= 30 and w * h < best_area:
+                    best_rect = rect
+                    best_area = w * h
+                for grandchild in (child.GetChildren() or []):
+                    try:
+                        grect = grandchild.BoundingRectangle
+                    except Exception:
+                        continue
+                    if grandchild.ControlTypeName == "ButtonControl":
+                        continue
+                    gw, gh = grect.width(), grect.height()
+                    if gw >= 30 and gh >= 30 and gw * gh < best_area:
+                        best_rect = grect
+                        best_area = gw * gh
+            return best_rect
+
+        # 遍历直接子控件，跳过头像按钮和极小控件
+        for child in (self.control.GetChildren() or []):
+            try:
+                rect = child.BoundingRectangle
+            except Exception:
+                continue
+            if child.ControlTypeName == "ButtonControl":
+                continue
+            if rect.width() <= 20 or rect.height() <= 20:
+                continue
+            # 子控件太宽（全宽容器） → 在内部查找气泡
+            if rect.width() > parent_width * 0.7:
+                bubble = _find_bubble_rect(child)
+                if bubble is not None:
+                    sx = (bubble.left + bubble.right) // 2
+                    sy = min((bubble.top + bubble.bottom) // 2, visible_bottom - 10)
+                    wxlog.debug("[HumanMessage.right_click] 气泡定位(内部): (%s,%s) rect=%s", sx, sy, bubble)
+                    uia.RightClick(sx, sy)
+                    return
+            # 子控件宽度合理，直接用其中心
+            sx = (rect.left + rect.right) // 2
+            sy = min((rect.top + rect.bottom) // 2, visible_bottom - 10)
+            wxlog.debug("[HumanMessage.right_click] 气泡定位(直接): (%s,%s) %s rect=%s", sx, sy, child.ControlTypeName, rect)
+            uia.RightClick(sx, sy)
+            return
+
+        # fallback: 偏移头像位置
+        wxlog.debug("[HumanMessage.right_click] 使用 fallback 偏移方式")
         self.head_control.RightClick(x=self._xbias)
 
 
@@ -121,9 +201,10 @@ class HumanMessage(BaseMessage):
             if not (roll_result := self.roll_into_view()):
                 return roll_result
             self.right_click()
+            time.sleep(0.5)  # 等待右键菜单弹出
             menu = CMenuWnd(self.root)
             return menu.select(item=option)
-        
+
         if timeout:
             t0 = time.time()
             while True:
@@ -131,7 +212,8 @@ class HumanMessage(BaseMessage):
                     return WxResponse(False, '引用消息超时')
                 if quote_result := _select_option(self, option):
                     return quote_result
-                
+                time.sleep(0.3)  # 失败后短暂等待再重试
+
         else:
             return _select_option(self, option)
     
