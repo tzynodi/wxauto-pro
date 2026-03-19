@@ -52,6 +52,9 @@ class SessionBox:
 
     def roll_down(self, n: int=5):
         self.control.WheelDown(waitTime=n)
+
+    def _activate_root_window(self):
+        self.root._show(force_foreground=True)
     
     def switch_chat(
             self, 
@@ -61,7 +64,7 @@ class SessionBox:
             force_wait: Union[float, int] = 0.5
         ):
         wxlog.debug(f"切换聊天窗口: {keywords}, {exact}, {force}, {force_wait}")
-        self.root._show()
+        self._activate_root_window()
         sessions = self.get_session()
         for session in sessions:
             if (
@@ -71,6 +74,7 @@ class SessionBox:
                 session.switch()
                 return keywords
 
+        self._activate_root_window()
         self.searchbox.RightClick()
         SetClipboardText(keywords)
         menu = CMenuWnd(self)
@@ -100,6 +104,7 @@ class SessionBox:
                     and search_result_item.TextControl(Name=f"微信号: <em>{keywords}</em>").Exists(0)
                 ):
                     wxlog.debug(f"{keywords} 匹配到微信号：{item_name}")
+                    self._activate_root_window()
                     search_result_item.Click()
                     return item_name
                 elif (
@@ -107,6 +112,7 @@ class SessionBox:
                     and search_result_item.TextControl(Name=f"昵称: <em>{highlight_who}</em>").Exists(0)
                 ):
                     wxlog.debug(f"{keywords} 匹配到昵称：{item_name}")
+                    self._activate_root_window()
                     search_result_item.Click()
                     return item_name
                 elif (
@@ -114,6 +120,7 @@ class SessionBox:
                     and search_result_item.TextControl(Name=f"群聊名称: <em>{highlight_who}</em>").Exists(0)
                 ):
                     wxlog.debug(f"{keywords} 匹配到群聊名称：{item_name}")
+                    self._activate_root_window()
                     search_result_item.Click()
                     return item_name
                 elif (
@@ -121,6 +128,7 @@ class SessionBox:
                     and keywords == item_name
                 ):
                     wxlog.debug(f"{keywords} 完整匹配")
+                    self._activate_root_window()
                     search_result_item.Click()
                     return keywords
                 elif (
@@ -136,6 +144,7 @@ class SessionBox:
             return None
         if results:
             wxlog.debug(f"{keywords} 匹配到多个结果，返回第一个")
+            self._activate_root_window()
             results[0].Click()
             return results[0].Name
         
@@ -151,7 +160,9 @@ class SessionBox:
                 wxlog.debug(f"找到会话: {name}")
                 while session.control.BoundingRectangle.height():
                     try:
+                        self._activate_root_window()
                         session.click()
+                        self._activate_root_window()
                         session.double_click()
                     except:
                         pass
@@ -231,7 +242,7 @@ class SessionElement:
         return self.parent._lang(text)
     
     def roll_into_view(self):
-        self.root._show()
+        self.root._show(force_foreground=True)
         roll_into_view(self.control.GetParentControl(), self.control)
 
 
