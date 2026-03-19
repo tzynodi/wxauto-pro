@@ -23,12 +23,57 @@ class BaseUIWnd(ABC):
     def __bool__(self):
         return self.exists()
 
-    def _show(self):
-        if hasattr(self, 'HWND'):
-            win32gui.ShowWindow(self.HWND, 1)
-            win32gui.SetWindowPos(self.HWND, -1, 0, 0, 0, 0, 3)
-            win32gui.SetWindowPos(self.HWND, -2, 0, 0, 0, 0, 3)
-        self.control.SwitchToThisWindow()
+    def _get_window_handle(self):
+        handle = getattr(self, 'HWND', None)
+        if handle:
+            return handle
+        try:
+            control = getattr(self, 'control', None)
+            if control is None:
+                return None
+            handle = getattr(control, 'NativeWindowHandle', None)
+            if handle:
+                return handle
+            if hasattr(control, 'GetTopLevelControl'):
+                top = control.GetTopLevelControl()
+                handle = getattr(top, 'NativeWindowHandle', None)
+                if handle:
+                    return handle
+        except Exception:
+            pass
+        return None
+
+    def _show(self, force_foreground: bool = False):
+        hwnd = self._get_window_handle()
+        if hwnd:
+            try:
+                win32gui.ShowWindow(hwnd, 9 if force_foreground else 1)
+            except Exception:
+                pass
+            if force_foreground:
+                try:
+                    win32gui.BringWindowToTop(hwnd)
+                except Exception:
+                    pass
+                try:
+                    win32gui.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 3)
+                    win32gui.SetWindowPos(hwnd, -2, 0, 0, 0, 0, 3)
+                except Exception:
+                    pass
+                try:
+                    win32gui.SetForegroundWindow(hwnd)
+                except Exception:
+                    pass
+        if force_foreground:
+            try:
+                self.control.SwitchToThisWindow()
+            except Exception:
+                pass
+            try:
+                self.control.SetFocus()
+            except Exception:
+                pass
+            time.sleep(0.05)
 
     def close(self):
         try:

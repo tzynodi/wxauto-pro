@@ -77,6 +77,10 @@ class Chat:
         """显示窗口"""
         self.core._show()
 
+    def ShowForeground(self):
+        """强制将聊天窗口切到前台。"""
+        self.core._show(force_foreground=True)
+
     def ChatInfo(self) -> Dict[str, str]:
         """获取聊天窗口信息
         
