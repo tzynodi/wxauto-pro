@@ -58,8 +58,20 @@ class ChatBox(BaseUISubWnd):
     
 
     def _activate_editbox(self):
-        if not self.editbox.HasKeyboardFocus:
-            self.editbox.MiddleClick()
+        t0 = time.time()
+        while not self.editbox.HasKeyboardFocus:
+            if time.time() - t0 > 3:
+                break
+            try:
+                self.control.SetFocus()
+            except:
+                pass
+            try:
+                self.editbox.SetFocus()
+            except:
+                pass
+            self.editbox.Click()
+            time.sleep(0.1)
 
     @property
     def who(self):
@@ -187,10 +199,41 @@ class ChatBox(BaseUISubWnd):
         if isinstance(file_path, str):
             file_path = [file_path]
         file_path = [os.path.abspath(f) for f in file_path]
-        SetClipboardFiles(file_path)
-        self._activate_editbox()
-        self.editbox.SendKeys('{Ctrl}v')
-        self.sendbtn.Click()
+        t0 = time.time()
+        while True:
+            if time.time() - t0 > 10:
+                return WxResponse.failure(f'Timeout --> {self.who} - {file_path}')
+
+            SetClipboardFiles(file_path)
+            self._show()
+            self._activate_editbox()
+            self.editbox.SendKeys('{Ctrl}v')
+            time.sleep(0.3)
+
+            edit_value = self.editbox.GetValuePattern().Value
+            if edit_value:
+                break
+
+            self._show()
+            self._activate_editbox()
+            self.editbox.SendKeys('{Ctrl}v')
+            time.sleep(0.3)
+            edit_value = self.editbox.GetValuePattern().Value
+            if edit_value:
+                break
+
+        t0 = time.time()
+        while True:
+            if time.time() - t0 > 10:
+                return WxResponse.failure(f'Timeout --> {self.who} - {file_path}')
+
+            self._show()
+            self._activate_editbox()
+            self.sendbtn.Click()
+            time.sleep(0.3)
+
+            if not self.editbox.GetValuePattern().Value:
+                return WxResponse.success("success")
     
     def load_more(self, interval=0.3):
         self._show()
