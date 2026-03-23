@@ -224,9 +224,10 @@ class SessionElement:
             else:
                 new_text = re.findall(self._lang('re_条数'), str(self.content))
                 if new_text:
-                    self.new_count = int(re.findall('\d+', new_text[0])[0])
-                    self.content = self.content[len(new_text[0])+1:]
-                else: self.new_count = 1
+                    self.new_count = int(re.findall(r"\d+", new_text[0])[0])
+                    self.content = self.content[len(new_text[0]) + 1 :]
+                else:
+                    self.new_count = 1
                     
 
         self.info = {

@@ -1,8 +1,16 @@
 """配置模块：监听列表、存储路径、日志、去重等。"""
 
 import os
+import sys
 from dataclasses import dataclass, field
 from typing import List
+
+
+def _get_app_base_dir() -> str:
+    """Return the directory that should hold runtime data."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 @dataclass
@@ -11,10 +19,10 @@ class AppConfig:
     listen_chats: List[str] = field(default_factory=list)
 
     # 数据库路径
-    db_path: str = os.path.join(os.getcwd(), "data", "messages.db")
+    db_path: str = os.path.join(_get_app_base_dir(), "data", "messages.db")
 
     # 下载根目录（图片/视频/文件）
-    download_dir: str = os.path.join(os.getcwd(), "downloads")
+    download_dir: str = os.path.join(_get_app_base_dir(), "downloads")
 
     # 日志级别
     log_level: str = "INFO"
